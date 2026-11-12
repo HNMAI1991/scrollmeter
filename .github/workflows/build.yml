@@ -1,0 +1,1077 @@
+# ScrollMeter: this one file contains the whole app.
+# GitHub builds it automatically and puts ScrollMeter.apk under "Releases".
+name: Build ScrollMeter APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Write the app's source files
+        shell: bash
+        run: |
+          mkdir -p app app/src/main app/src/main/java/com/scrollmeter/app app/src/main/res/drawable app/src/main/res/values app/src/main/res/xml
+          cat > settings.gradle <<'SCROLLMETER_EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "ScrollMeter"
+          include ':app'
+          SCROLLMETER_EOF
+          cat > build.gradle <<'SCROLLMETER_EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          SCROLLMETER_EOF
+          cat > gradle.properties <<'SCROLLMETER_EOF'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          SCROLLMETER_EOF
+          cat > app/build.gradle <<'SCROLLMETER_EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.scrollmeter.app'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId 'com.scrollmeter.app'
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+
+              // Fixed signing key so new builds install over old ones and keep your stats.
+              signingConfigs {
+                  debug {
+                      storeFile file('scrollmeter.keystore')
+                      storePassword 'scrollmeter'
+                      keyAlias 'scrollmeter'
+                      keyPassword 'scrollmeter'
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_11
+                  targetCompatibility JavaVersion.VERSION_11
+                  encoding 'UTF-8'
+              }
+          }
+          SCROLLMETER_EOF
+          cat > app/src/main/AndroidManifest.xml <<'SCROLLMETER_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@drawable/ic_launcher"
+                  android:label="@string/app_name"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".TrackerService"
+                      android:exported="true"
+                      android:label="@string/service_name"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+              </application>
+          </manifest>
+          SCROLLMETER_EOF
+          cat > app/src/main/res/xml/accessibility_config.xml <<'SCROLLMETER_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeViewScrolled|typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagReportViewIds"
+              android:canRetrieveWindowContent="true"
+              android:description="@string/service_desc"
+              android:notificationTimeout="100" />
+          SCROLLMETER_EOF
+          cat > app/src/main/res/values/strings.xml <<'SCROLLMETER_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">ScrollMeter</string>
+              <string name="service_name">ScrollMeter tracker</string>
+              <string name="service_desc">Counts Instagram reels and measures time spent in Instagram, WhatsApp, X and Facebook. Shows a live counter and a break screen. Everything stays on your phone: ScrollMeter has no internet access.</string>
+          </resources>
+          SCROLLMETER_EOF
+          cat > app/src/main/res/drawable/ic_launcher.xml <<'SCROLLMETER_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="48dp"
+              android:height="48dp"
+              android:viewportWidth="48"
+              android:viewportHeight="48">
+              <path
+                  android:fillColor="#FF5B4BDB"
+                  android:pathData="M12,2h24a10,10 0 0 1 10,10v24a10,10 0 0 1 -10,10h-24a10,10 0 0 1 -10,-10v-24a10,10 0 0 1 10,-10z" />
+              <path
+                  android:fillColor="#FFFFFFFF"
+                  android:pathData="M15,11h18v5l-7,8 7,8v5h-18v-5l7,-8 -7,-8z" />
+              <path
+                  android:fillColor="#FF5B4BDB"
+                  android:pathData="M19,14h10v1.2l-5,5.8 -5,-5.8z" />
+          </vector>
+          SCROLLMETER_EOF
+          cat > app/src/main/java/com/scrollmeter/app/Stats.java <<'SCROLLMETER_EOF'
+          package com.scrollmeter.app;
+
+          import android.content.Context;
+          import android.content.SharedPreferences;
+
+          import java.text.SimpleDateFormat;
+          import java.util.Calendar;
+          import java.util.Locale;
+
+          /** Shared storage: per-day seconds per app, reel counts and user settings. */
+          final class Stats {
+
+              static final int APPS = 4;
+              static final int INSTAGRAM = 0;
+              static final String[] NAMES = {"Instagram", "WhatsApp", "X", "Facebook"};
+              static final String[] SHORT = {"IG", "WA", "X", "FB"};
+
+              static final String K_REEL_LIMIT = "reel_limit";
+              static final String K_MIN_LIMIT = "min_limit";
+              static final String K_OVERLAY = "overlay_on";
+              static final String K_BREAK = "break_on";
+              static final String K_PILL_X = "pill_x";
+              static final String K_PILL_Y = "pill_y";
+              static final String K_LAST_ID = "last_ig_scroll_id";
+
+              private Stats() {
+              }
+
+              static SharedPreferences prefs(Context c) {
+                  return c.getSharedPreferences("scrollmeter", Context.MODE_PRIVATE);
+              }
+
+              /** Which tracked app a package belongs to, or -1 if it is not tracked. */
+              static int indexOf(CharSequence pkg) {
+                  if (pkg == null) return -1;
+                  switch (pkg.toString()) {
+                      case "com.instagram.android":
+                      case "com.instagram.lite":
+                          return 0;
+                      case "com.whatsapp":
+                      case "com.whatsapp.w4b":
+                          return 1;
+                      case "com.twitter.android":
+                      case "com.twitter.android.lite":
+                          return 2;
+                      case "com.facebook.katana":
+                      case "com.facebook.lite":
+                          return 3;
+                      default:
+                          return -1;
+                  }
+              }
+
+              static String dayKey(int daysAgo) {
+                  Calendar c = Calendar.getInstance();
+                  c.add(Calendar.DAY_OF_YEAR, -daysAgo);
+                  return new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(c.getTime());
+              }
+
+              static String dayLabel(int daysAgo) {
+                  if (daysAgo == 0) return "Today";
+                  if (daysAgo == 1) return "Yesterday";
+                  Calendar c = Calendar.getInstance();
+                  c.add(Calendar.DAY_OF_YEAR, -daysAgo);
+                  return new SimpleDateFormat("EEE d MMM", Locale.getDefault()).format(c.getTime());
+              }
+
+              static String timeKey(String day, int app) {
+                  return day + "|t|" + app;
+              }
+
+              static String reelKey(String day) {
+                  return day + "|reels";
+              }
+
+              static long seconds(SharedPreferences p, String day, int app) {
+                  return p.getLong(timeKey(day, app), 0);
+              }
+
+              static long reels(SharedPreferences p, String day) {
+                  return p.getLong(reelKey(day), 0);
+              }
+
+              static long total(SharedPreferences p, String day) {
+                  long t = 0;
+                  for (int i = 0; i < APPS; i++) t += seconds(p, day, i);
+                  return t;
+              }
+
+              static int reelLimit(SharedPreferences p) {
+                  return p.getInt(K_REEL_LIMIT, 30);
+              }
+
+              static int minuteLimit(SharedPreferences p) {
+                  return p.getInt(K_MIN_LIMIT, 15);
+              }
+
+              static boolean overlayOn(SharedPreferences p) {
+                  return p.getBoolean(K_OVERLAY, true);
+              }
+
+              static boolean breakOn(SharedPreferences p) {
+                  return p.getBoolean(K_BREAK, true);
+              }
+
+              static String fmt(long s) {
+                  if (s < 60) return s + "s";
+                  long m = s / 60;
+                  if (m < 60) return m + "m";
+                  return (m / 60) + "h " + String.format(Locale.US, "%02dm", m % 60);
+              }
+          }
+          SCROLLMETER_EOF
+          cat > app/src/main/java/com/scrollmeter/app/TrackerService.java <<'SCROLLMETER_EOF'
+          package com.scrollmeter.app;
+
+          import android.accessibilityservice.AccessibilityService;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.graphics.Color;
+          import android.graphics.PixelFormat;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.PowerManager;
+          import android.os.SystemClock;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.view.accessibility.AccessibilityEvent;
+          import android.view.accessibility.AccessibilityNodeInfo;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          /**
+           * Runs in the background once turned on in Accessibility settings.
+           * Every second it checks which app is on screen and adds a second to that app's total.
+           * It counts Instagram reels from scroll events, shows the live counter and the break screen.
+           * Nothing is sent anywhere: the app has no internet permission.
+           */
+          public class TrackerService extends AccessibilityService {
+
+              private static final long AWAY_RESET_MS = 10 * 60 * 1000L; // 10 min away = fresh start
+              private static final int BASE_WAIT_SECONDS = 10;           // wait before "Continue" unlocks
+              private static final int MAX_WAIT_SECONDS = 60;
+              private static final int EXTRA_MINUTES = 5;                // "Continue" grants this much
+              private static final int EXTRA_REELS = 10;
+
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private SharedPreferences prefs;
+              private WindowManager wm;
+              private PowerManager pm;
+
+              private String day;
+              private final long[] secs = new long[Stats.APPS];
+              private long reels;
+              private int ticksSinceSave;
+
+              // Break-screen state
+              private long secsSinceBreak;
+              private long reelsAtBreak;
+              private long lastTrackedAt;
+              private boolean breakPending;
+              private boolean breakForReels;
+              private int continuesInRow;
+
+              // Reel detection state
+              private int lastPagerIndex = -1;
+              private long lastScrollAt;
+              private String lastSeenId;
+
+              // Overlays
+              private TextView pill;
+              private WindowManager.LayoutParams pillLp;
+              private View breakView;
+              private TextView breakReason;
+              private TextView breakStats;
+              private Button continueBtn;
+              private long breakShownAt;
+              private int breakWait;
+
+              private final Runnable tick = new Runnable() {
+                  @Override
+                  public void run() {
+                      try {
+                          onTick();
+                      } catch (RuntimeException ignored) {
+                          // Never let one bad tick stop tracking.
+                      }
+                      handler.postDelayed(this, 1000);
+                  }
+              };
+
+              @Override
+              protected void onServiceConnected() {
+                  super.onServiceConnected();
+                  prefs = Stats.prefs(this);
+                  wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+                  pm = (PowerManager) getSystemService(POWER_SERVICE);
+                  loadDay();
+                  reelsAtBreak = reels;
+                  handler.removeCallbacks(tick);
+                  handler.post(tick);
+              }
+
+              private void loadDay() {
+                  day = Stats.dayKey(0);
+                  for (int i = 0; i < Stats.APPS; i++) secs[i] = Stats.seconds(prefs, day, i);
+                  reels = Stats.reels(prefs, day);
+              }
+
+              private void save() {
+                  if (prefs == null || day == null) return;
+                  SharedPreferences.Editor e = prefs.edit();
+                  for (int i = 0; i < Stats.APPS; i++) e.putLong(Stats.timeKey(day, i), secs[i]);
+                  e.putLong(Stats.reelKey(day), reels);
+                  e.apply();
+                  ticksSinceSave = 0;
+              }
+
+              // ---------------------------------------------------------------- every second
+
+              private void onTick() {
+                  String today = Stats.dayKey(0);
+                  if (!today.equals(day)) {
+                      save();
+                      long sinceBreak = reels - reelsAtBreak;
+                      loadDay();
+                      reelsAtBreak = reels - sinceBreak;
+                  }
+
+                  int app = -1;
+                  if (pm == null || pm.isInteractive()) app = Stats.indexOf(foregroundPackage());
+                  long now = SystemClock.elapsedRealtime();
+
+                  if (app >= 0) {
+                      secs[app]++;
+                      secsSinceBreak++;
+                      lastTrackedAt = now;
+                  } else if (lastTrackedAt != 0 && now - lastTrackedAt > AWAY_RESET_MS) {
+                      // Away from all tracked apps long enough: that counts as a real break.
+                      secsSinceBreak = 0;
+                      reelsAtBreak = reels;
+                      breakPending = false;
+                      continuesInRow = 0;
+                  }
+                  if (app != Stats.INSTAGRAM) lastPagerIndex = -1;
+
+                  boolean breakOn = Stats.breakOn(prefs);
+                  if (!breakOn) {
+                      breakPending = false;
+                  } else if (app >= 0 && !breakPending) {
+                      int minLimit = Stats.minuteLimit(prefs);
+                      int reelLimit = Stats.reelLimit(prefs);
+                      boolean byReels = reelLimit > 0 && reels - reelsAtBreak >= reelLimit;
+                      boolean byTime = minLimit > 0 && secsSinceBreak >= minLimit * 60L;
+                      if (byReels || byTime) {
+                          breakPending = true;
+                          breakForReels = byReels;
+                      }
+                  }
+
+                  if (breakPending && app >= 0) showBreak(now);
+                  else hideBreak();
+
+                  if (app >= 0 && breakView == null && Stats.overlayOn(prefs)) showPill(app);
+                  else hidePill();
+
+                  if (++ticksSinceSave >= 5) save();
+              }
+
+              private String foregroundPackage() {
+                  AccessibilityNodeInfo root = getRootInActiveWindow();
+                  if (root == null) return null;
+                  CharSequence p = root.getPackageName();
+                  return p == null ? null : p.toString();
+              }
+
+              // ---------------------------------------------------------------- reel counting
+
+              @Override
+              public void onAccessibilityEvent(AccessibilityEvent event) {
+                  if (event == null || event.getEventType() != AccessibilityEvent.TYPE_VIEW_SCROLLED) return;
+                  if (Stats.indexOf(event.getPackageName()) != Stats.INSTAGRAM) return;
+
+                  String id = null;
+                  AccessibilityNodeInfo src = event.getSource();
+                  if (src != null) id = src.getViewIdResourceName();
+                  if (id != null && prefs != null && !id.equals(lastSeenId)) {
+                      lastSeenId = id; // shown under Troubleshooting in the app
+                      prefs.edit().putString(Stats.K_LAST_ID, id).apply();
+                  }
+                  // Instagram calls reels "clips" internally; its reels viewer has "clips" in its view id.
+                  if (id == null || !id.contains("clips")) return;
+
+                  long now = SystemClock.elapsedRealtime();
+                  int index = event.getFromIndex();
+                  if (index >= 0) {
+                      if (lastPagerIndex >= 0 && index != lastPagerIndex) reels++;
+                      lastPagerIndex = index;
+                  } else if (now - lastScrollAt > 800) {
+                      reels++; // no position given: treat each separate burst of scrolling as one swipe
+                  }
+                  lastScrollAt = now;
+              }
+
+              @Override
+              public void onInterrupt() {
+              }
+
+              // ---------------------------------------------------------------- live counter
+
+              private void showPill(int app) {
+                  if (pill == null) {
+                      TextView t = new TextView(this);
+                      t.setTextColor(Color.WHITE);
+                      t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                      t.setTypeface(Typeface.DEFAULT_BOLD);
+                      t.setPadding(dp(10), dp(6), dp(10), dp(6));
+                      GradientDrawable bg = new GradientDrawable();
+                      bg.setColor(0xD9000000);
+                      bg.setCornerRadius(dp(14));
+                      t.setBackground(bg);
+
+                      WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                              WindowManager.LayoutParams.WRAP_CONTENT,
+                              WindowManager.LayoutParams.WRAP_CONTENT,
+                              WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                              WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                      | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                              PixelFormat.TRANSLUCENT);
+                      lp.gravity = Gravity.TOP | Gravity.END;
+                      lp.x = prefs.getInt(Stats.K_PILL_X, dp(12));
+                      lp.y = prefs.getInt(Stats.K_PILL_Y, dp(120));
+                      t.setOnTouchListener(new DragListener());
+                      try {
+                          wm.addView(t, lp);
+                      } catch (RuntimeException e) {
+                          return;
+                      }
+                      pill = t;
+                      pillLp = lp;
+                  }
+                  long total = 0;
+                  for (long s : secs) total += s;
+                  StringBuilder sb = new StringBuilder();
+                  sb.append(Stats.SHORT[app]).append(' ').append(Stats.fmt(secs[app]));
+                  if (app == Stats.INSTAGRAM) sb.append(" · ").append(reels).append(" reels");
+                  sb.append("\nAll 4 today: ").append(Stats.fmt(total));
+                  pill.setText(sb.toString());
+              }
+
+              private void hidePill() {
+                  if (pill == null) return;
+                  try {
+                      wm.removeView(pill);
+                  } catch (RuntimeException ignored) {
+                  }
+                  pill = null;
+              }
+
+              /** Lets you drag the counter out of the way; its position is remembered. */
+              private class DragListener implements View.OnTouchListener {
+                  private float downX, downY;
+                  private int startX, startY;
+
+                  @Override
+                  public boolean onTouch(View v, MotionEvent ev) {
+                      if (pillLp == null) return false;
+                      switch (ev.getActionMasked()) {
+                          case MotionEvent.ACTION_DOWN:
+                              downX = ev.getRawX();
+                              downY = ev.getRawY();
+                              startX = pillLp.x;
+                              startY = pillLp.y;
+                              return true;
+                          case MotionEvent.ACTION_MOVE:
+                              // Gravity is END, so x is measured from the right edge.
+                              pillLp.x = Math.max(0, startX - (int) (ev.getRawX() - downX));
+                              pillLp.y = Math.max(0, startY + (int) (ev.getRawY() - downY));
+                              try {
+                                  wm.updateViewLayout(v, pillLp);
+                              } catch (RuntimeException ignored) {
+                              }
+                              return true;
+                          case MotionEvent.ACTION_UP:
+                          case MotionEvent.ACTION_CANCEL:
+                              prefs.edit().putInt(Stats.K_PILL_X, pillLp.x).putInt(Stats.K_PILL_Y, pillLp.y).apply();
+                              return true;
+                          default:
+                              return false;
+                      }
+                  }
+              }
+
+              // ---------------------------------------------------------------- break screen
+
+              private void showBreak(long now) {
+                  if (breakView == null) {
+                      LinearLayout box = new LinearLayout(this);
+                      box.setOrientation(LinearLayout.VERTICAL);
+                      box.setGravity(Gravity.CENTER);
+                      box.setPadding(dp(32), dp(32), dp(32), dp(32));
+                      box.setBackgroundColor(0xF20E1116);
+                      box.setClickable(true); // swallow touches so the app underneath can't be used
+
+                      box.addView(text("🌿", 56, false), wrap(0));
+                      box.addView(text("Time for a break", 26, true), wrap(12));
+                      breakReason = text("", 17, false);
+                      box.addView(breakReason, wrap(16));
+                      TextView q = text("Is this still what you want to be doing?", 16, false);
+                      q.setAlpha(0.85f);
+                      box.addView(q, wrap(12));
+                      breakStats = text("", 14, false);
+                      breakStats.setAlpha(0.6f);
+                      box.addView(breakStats, wrap(24));
+
+                      Button close = button("Close the app", 0xFF7C6CF2, Color.WHITE);
+                      close.setOnClickListener(v -> performGlobalAction(GLOBAL_ACTION_HOME));
+                      box.addView(close, full(36));
+
+                      continueBtn = button("", 0x00000000, 0xCCFFFFFF);
+                      continueBtn.setOnClickListener(v -> grantMore());
+                      box.addView(continueBtn, full(12));
+
+                      WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                              WindowManager.LayoutParams.MATCH_PARENT,
+                              WindowManager.LayoutParams.MATCH_PARENT,
+                              WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                              WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                      | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                              PixelFormat.TRANSLUCENT);
+                      try {
+                          wm.addView(box, lp);
+                      } catch (RuntimeException e) {
+                          return;
+                      }
+                      breakView = box;
+                      breakShownAt = now;
+                      // Each "Continue" in a row makes the next wait longer: 10s, 20s, 30s ... up to 60s.
+                      breakWait = Math.min(MAX_WAIT_SECONDS, BASE_WAIT_SECONDS * (continuesInRow + 1));
+                  }
+
+                  breakReason.setText(breakForReels
+                          ? "You've watched " + (reels - reelsAtBreak) + " reels since your last break."
+                          : "You've been on social apps for " + (secsSinceBreak / 60) + " minutes straight.");
+                  breakStats.setText(todaySummary());
+
+                  long left = breakWait - (now - breakShownAt) / 1000;
+                  if (left > 0) {
+                      continueBtn.setEnabled(false);
+                      continueBtn.setAlpha(0.45f);
+                      continueBtn.setText("Continue anyway in " + left + "s");
+                  } else {
+                      continueBtn.setEnabled(true);
+                      continueBtn.setAlpha(1f);
+                      continueBtn.setText("Continue for " + EXTRA_MINUTES + " min / " + EXTRA_REELS + " reels");
+                  }
+              }
+
+              private void grantMore() {
+                  breakPending = false;
+                  continuesInRow++;
+                  int minLimit = Stats.minuteLimit(prefs);
+                  int reelLimit = Stats.reelLimit(prefs);
+                  // Next break comes after EXTRA_MINUTES more minutes or EXTRA_REELS more reels.
+                  secsSinceBreak = minLimit > 0 ? Math.max(0, minLimit * 60L - EXTRA_MINUTES * 60L) : 0;
+                  reelsAtBreak = reelLimit > 0 ? reels - Math.max(0, reelLimit - EXTRA_REELS) : reels;
+                  hideBreak();
+              }
+
+              private void hideBreak() {
+                  if (breakView == null) return;
+                  try {
+                      wm.removeView(breakView);
+                  } catch (RuntimeException ignored) {
+                  }
+                  breakView = null;
+                  breakReason = null;
+                  breakStats = null;
+                  continueBtn = null;
+              }
+
+              private String todaySummary() {
+                  StringBuilder sb = new StringBuilder("Today");
+                  long total = 0;
+                  for (int i = 0; i < Stats.APPS; i++) {
+                      total += secs[i];
+                      if (secs[i] < 60) continue;
+                      sb.append("\n").append(Stats.NAMES[i]).append(": ").append(Stats.fmt(secs[i]));
+                      if (i == Stats.INSTAGRAM) sb.append(" · ").append(reels).append(" reels");
+                  }
+                  sb.append("\nTotal: ").append(Stats.fmt(total));
+                  return sb.toString();
+              }
+
+              // ---------------------------------------------------------------- helpers
+
+              private TextView text(String s, int sp, boolean bold) {
+                  TextView t = new TextView(this);
+                  t.setText(s);
+                  t.setTextColor(Color.WHITE);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+                  t.setGravity(Gravity.CENTER);
+                  if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
+                  return t;
+              }
+
+              private Button button(String s, int bgColor, int textColor) {
+                  Button b = new Button(this);
+                  b.setText(s);
+                  b.setAllCaps(false);
+                  b.setTextColor(textColor);
+                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(bgColor);
+                  bg.setCornerRadius(dp(26));
+                  if (bgColor == 0) bg.setStroke(dp(1), 0x66FFFFFF);
+                  b.setBackground(bg);
+                  b.setPadding(dp(16), dp(14), dp(16), dp(14));
+                  return b;
+              }
+
+              private LinearLayout.LayoutParams wrap(int topDp) {
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                  lp.topMargin = dp(topDp);
+                  return lp;
+              }
+
+              private LinearLayout.LayoutParams full(int topDp) {
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                  lp.topMargin = dp(topDp);
+                  return lp;
+              }
+
+              private int dp(int v) {
+                  return Math.round(v * getResources().getDisplayMetrics().density);
+              }
+
+              // ---------------------------------------------------------------- shutdown
+
+              private void cleanup() {
+                  handler.removeCallbacks(tick);
+                  save();
+                  hidePill();
+                  hideBreak();
+              }
+
+              @Override
+              public boolean onUnbind(Intent intent) {
+                  cleanup();
+                  return super.onUnbind(intent);
+              }
+
+              @Override
+              public void onDestroy() {
+                  cleanup();
+                  super.onDestroy();
+              }
+          }
+          SCROLLMETER_EOF
+          cat > app/src/main/java/com/scrollmeter/app/MainActivity.java <<'SCROLLMETER_EOF'
+          package com.scrollmeter.app;
+
+          import android.app.Activity;
+          import android.content.ActivityNotFoundException;
+          import android.content.ComponentName;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.provider.Settings;
+          import android.text.InputType;
+          import android.text.TextUtils;
+          import android.util.TypedValue;
+          import android.view.View;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.Switch;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          /** Home screen: tracking status, today's numbers, last 7 days and the limits. */
+          public class MainActivity extends Activity {
+
+              private static final int INK = 0xFF16181D;
+              private static final int MUTED = 0xFF5F6470;
+              private static final int ACCENT = 0xFF5B4BDB;
+
+              private SharedPreferences prefs;
+              private final Handler handler = new Handler(Looper.getMainLooper());
+
+              private TextView status;
+              private Button enableBtn;
+              private Button restrictedBtn;
+              private TextView restrictedHelp;
+              private TextView today;
+              private TextView week;
+              private TextView debug;
+              private EditText reelLimit;
+              private EditText minLimit;
+              private Switch overlaySw;
+              private Switch breakSw;
+
+              private final Runnable refresher = new Runnable() {
+                  @Override
+                  public void run() {
+                      refresh();
+                      handler.postDelayed(this, 2000);
+                  }
+              };
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  prefs = Stats.prefs(this);
+
+                  ScrollView scroll = new ScrollView(this);
+                  scroll.setBackgroundColor(0xFFF6F6F9);
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(dp(20), dp(28), dp(20), dp(40));
+                  scroll.addView(root);
+                  setContentView(scroll);
+
+                  root.addView(label("ScrollMeter", 28, INK, true));
+                  TextView tag = label("Notice the scroll. Take the break.", 15, MUTED, false);
+                  root.addView(tag);
+
+                  // Status card
+                  LinearLayout statusCard = card(root);
+                  status = label("", 16, INK, true);
+                  statusCard.addView(status);
+                  enableBtn = button("Turn on tracking", true);
+                  enableBtn.setOnClickListener(v -> open(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+                  statusCard.addView(enableBtn, spaced(12));
+                  restrictedHelp = label("Is ScrollMeter greyed out in Accessibility? Tap below, then ⋮ (top right) → "
+                          + "\"Allow restricted settings\", then come back and tap Turn on tracking.", 13, MUTED, false);
+                  statusCard.addView(restrictedHelp, spaced(12));
+                  restrictedBtn = button("Open ScrollMeter app info", false);
+                  restrictedBtn.setOnClickListener(v -> open(new Intent(
+                          Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))));
+                  statusCard.addView(restrictedBtn, spaced(8));
+
+                  // Today
+                  root.addView(section("Today"));
+                  LinearLayout todayCard = card(root);
+                  today = label("", 16, INK, false);
+                  today.setLineSpacing(0, 1.3f);
+                  todayCard.addView(today);
+
+                  // Week
+                  root.addView(section("Last 7 days"));
+                  LinearLayout weekCard = card(root);
+                  week = label("", 15, INK, false);
+                  week.setLineSpacing(0, 1.35f);
+                  weekCard.addView(week);
+
+                  // Limits
+                  root.addView(section("Break screen"));
+                  LinearLayout limits = card(root);
+                  limits.addView(label("Break after this many reels (0 = off)", 14, MUTED, false));
+                  reelLimit = number();
+                  limits.addView(reelLimit);
+                  limits.addView(label("Break after this many minutes on these apps (0 = off)", 14, MUTED, false), spaced(12));
+                  minLimit = number();
+                  limits.addView(minLimit);
+                  breakSw = new Switch(this);
+                  breakSw.setText("Show the break screen");
+                  breakSw.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+                  limits.addView(breakSw, spaced(16));
+                  overlaySw = new Switch(this);
+                  overlaySw.setText("Show live counter on screen");
+                  overlaySw.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+                  limits.addView(overlaySw, spaced(12));
+                  Button save = button("Save", true);
+                  save.setOnClickListener(v -> saveSettings());
+                  limits.addView(save, spaced(16));
+                  limits.addView(label("Tip: drag the live counter to move it. It is shown only inside "
+                          + "Instagram, WhatsApp, X and Facebook.", 13, MUTED, false), spaced(12));
+
+                  // Troubleshooting
+                  root.addView(section("Troubleshooting"));
+                  LinearLayout dbg = card(root);
+                  debug = label("", 13, MUTED, false);
+                  dbg.addView(debug);
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  reelLimit.setText(String.valueOf(Stats.reelLimit(prefs)));
+                  minLimit.setText(String.valueOf(Stats.minuteLimit(prefs)));
+                  overlaySw.setChecked(Stats.overlayOn(prefs));
+                  breakSw.setChecked(Stats.breakOn(prefs));
+                  handler.removeCallbacks(refresher);
+                  handler.post(refresher);
+              }
+
+              @Override
+              protected void onPause() {
+                  super.onPause();
+                  handler.removeCallbacks(refresher);
+              }
+
+              private void refresh() {
+                  boolean on = serviceEnabled();
+                  status.setText(on ? "✅  Tracking is on" : "⚠️  Tracking is off — nothing is being counted");
+                  enableBtn.setText(on ? "Accessibility settings" : "Turn on tracking");
+                  int helpVis = on ? View.GONE : View.VISIBLE;
+                  restrictedHelp.setVisibility(helpVis);
+                  restrictedBtn.setVisibility(helpVis);
+
+                  String d = Stats.dayKey(0);
+                  StringBuilder t = new StringBuilder();
+                  for (int i = 0; i < Stats.APPS; i++) {
+                      t.append(Stats.NAMES[i]).append(":  ").append(Stats.fmt(Stats.seconds(prefs, d, i)));
+                      if (i == Stats.INSTAGRAM) t.append("  ·  ").append(Stats.reels(prefs, d)).append(" reels");
+                      t.append('\n');
+                  }
+                  t.append("Total:  ").append(Stats.fmt(Stats.total(prefs, d)));
+                  today.setText(t.toString());
+
+                  StringBuilder w = new StringBuilder();
+                  for (int i = 0; i < 7; i++) {
+                      String k = Stats.dayKey(i);
+                      if (i > 0) w.append('\n');
+                      w.append(Stats.dayLabel(i)).append(":  ").append(Stats.fmt(Stats.total(prefs, k)))
+                              .append("  ·  ").append(Stats.reels(prefs, k)).append(" reels");
+                  }
+                  week.setText(w.toString());
+
+                  String id = prefs.getString(Stats.K_LAST_ID, null);
+                  debug.setText("Last Instagram scroll view seen:\n" + (id == null ? "none yet" : id)
+                          + "\n\nIf reels stop being counted after an Instagram update, open Reels, swipe a few "
+                          + "times, and share this line so the detection can be fixed.");
+              }
+
+              private void saveSettings() {
+                  prefs.edit()
+                          .putInt(Stats.K_REEL_LIMIT, parse(reelLimit, 30))
+                          .putInt(Stats.K_MIN_LIMIT, parse(minLimit, 15))
+                          .putBoolean(Stats.K_OVERLAY, overlaySw.isChecked())
+                          .putBoolean(Stats.K_BREAK, breakSw.isChecked())
+                          .apply();
+                  Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show();
+              }
+
+              private static int parse(EditText e, int fallback) {
+                  try {
+                      int v = Integer.parseInt(e.getText().toString().trim());
+                      return Math.max(0, Math.min(999, v));
+                  } catch (NumberFormatException ex) {
+                      return fallback;
+                  }
+              }
+
+              private boolean serviceEnabled() {
+                  String enabled = Settings.Secure.getString(getContentResolver(),
+                          Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+                  if (enabled == null) return false;
+                  ComponentName me = new ComponentName(this, TrackerService.class);
+                  TextUtils.SimpleStringSplitter sp = new TextUtils.SimpleStringSplitter(':');
+                  sp.setString(enabled);
+                  for (String s : sp) {
+                      if (me.equals(ComponentName.unflattenFromString(s))) return true;
+                  }
+                  return false;
+              }
+
+              private void open(Intent i) {
+                  try {
+                      startActivity(i);
+                  } catch (ActivityNotFoundException e) {
+                      Toast.makeText(this, "Couldn't open that screen on this phone", Toast.LENGTH_LONG).show();
+                  }
+              }
+
+              // ---------------------------------------------------------------- view helpers
+
+              private TextView label(String s, int sp, int color, boolean bold) {
+                  TextView t = new TextView(this);
+                  t.setText(s);
+                  t.setTextColor(color);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+                  if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
+                  return t;
+              }
+
+              private TextView section(String s) {
+                  TextView t = label(s.toUpperCase(), 13, MUTED, true);
+                  t.setLetterSpacing(0.08f);
+                  t.setPadding(dp(4), dp(24), 0, dp(8));
+                  return t;
+              }
+
+              private LinearLayout card(LinearLayout parent) {
+                  LinearLayout c = new LinearLayout(this);
+                  c.setOrientation(LinearLayout.VERTICAL);
+                  c.setPadding(dp(16), dp(16), dp(16), dp(16));
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(Color.WHITE);
+                  bg.setCornerRadius(dp(16));
+                  c.setBackground(bg);
+                  parent.addView(c, spaced(parent.getChildCount() <= 2 ? 20 : 0));
+                  return c;
+              }
+
+              private Button button(String s, boolean primary) {
+                  Button b = new Button(this);
+                  b.setText(s);
+                  b.setAllCaps(false);
+                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+                  b.setTextColor(primary ? Color.WHITE : ACCENT);
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(primary ? ACCENT : 0xFFECEAFD);
+                  bg.setCornerRadius(dp(22));
+                  b.setBackground(bg);
+                  return b;
+              }
+
+              private EditText number() {
+                  EditText e = new EditText(this);
+                  e.setInputType(InputType.TYPE_CLASS_NUMBER);
+                  e.setTextColor(INK);
+                  e.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+                  return e;
+              }
+
+              private LinearLayout.LayoutParams spaced(int topDp) {
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                  lp.topMargin = dp(topDp);
+                  return lp;
+              }
+
+              private int dp(int v) {
+                  return Math.round(v * getResources().getDisplayMetrics().density);
+              }
+          }
+          SCROLLMETER_EOF
+          base64 -d > app/scrollmeter.keystore <<'SCROLLMETER_EOF'
+          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
+          WNuQuf3UP8XAWdJ6bcyFFP4MTyKUV6medC32NeE=
+          SCROLLMETER_EOF
+
+      - name: Build the APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk ScrollMeter.apk
+
+      - name: Keep a copy with this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScrollMeter-apk
+          path: ScrollMeter.apk
+
+      - name: Publish to Releases (easy phone download)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: ScrollMeter build ${{ github.run_number }}
+          body: Download ScrollMeter.apk below and open it on your phone.
+          files: ScrollMeter.apk
+          make_latest: true
